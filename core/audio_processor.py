@@ -5,8 +5,10 @@ Módulo de adquisición y procesamiento de audio.
 - Captura de voz en tiempo real desde el micrófono (sounddevice).
 - Filtrado muestra a muestra con la ecuación en diferencias.
 - Cálculo de espectros por FFT para entrada y salida.
+- Reproducción de la señal original y de la señal filtrada.
 """
 
+from collections import deque
 import threading
 
 import numpy as np
@@ -26,7 +28,7 @@ from config.parametros import (
 class AudioProcessor:
     """
     Orquesta el flujo del laboratorio:
-    micrófono -> x(n) -> ecuación en diferencias -> y(n) -> FFT.
+    micrófono -> x(n) -> ecuación en diferencias -> y(n) -> FFT / reproducción.
     """
 
     def __init__(self, fs: float = DEFAULT_FS, fc1: float = DEFAULT_FC1, fc2: float = DEFAULT_FC2):
@@ -45,6 +47,15 @@ class AudioProcessor:
         self.buffer_in = np.zeros(FFT_SIZE, dtype=np.float64)
         self.buffer_out = np.zeros(FFT_SIZE, dtype=np.float64)
         self.fft_window = np.hanning(FFT_SIZE)
+
+        # Últimos 6 s capturados: se usan para reproducir
+        max_live = max(1, int(np.ceil(6.0 * self.fs / BUFFER_SIZE)))
+        self.live_in = deque(maxlen=max_live)
+        self.live_out = deque(maxlen=max_live)
+
+        # Últimas señales completas (reproducción / análisis)
+        self.signal_in = np.array([], dtype=np.float64)
+        self.signal_out = np.array([], dtype=np.float64)
 
         self.ultimo_error = ""
 
@@ -94,6 +105,9 @@ class AudioProcessor:
                 self.buffer_out[:-n] = self.buffer_out[n:]
                 self.buffer_out[-n:] = y[-n:]
 
+                self.live_in.append(x.copy())
+                self.live_out.append(y.copy())
+
         try:
             self.stream = sd.InputStream(
                 samplerate=int(self.fs),
@@ -114,12 +128,40 @@ class AudioProcessor:
         with self.lock:
             self.is_streaming = False
             stream, self.stream = self.stream, None
+            self.consolidar_captura()
         if stream is not None:
             try:
                 stream.stop()
                 stream.close()
             except Exception:
                 pass
+
+    # ------------------------------------------------------------------
+    # Reproducción
+    # ------------------------------------------------------------------
+    def consolidar_captura(self):
+        """Convierte el búfer circular en arreglos continuos para reproducir."""
+        with self.lock:
+            if not self.live_in:
+                return self.signal_in, self.signal_out
+            self.signal_in = np.concatenate(list(self.live_in))
+            self.signal_out = np.concatenate(list(self.live_out))
+        return self.signal_in, self.signal_out
+
+    def reproducir(self, cual: str = "filtrada"):
+        """Reproduce 'original' o 'filtrada' (normalizada para evitar saturación)."""
+        senal = self.signal_in if cual == "original" else self.signal_out
+
+        if senal.size == 0:
+            raise ValueError("No hay audio capturado para reproducir.")
+
+        pico = float(np.max(np.abs(senal)))
+        salida = senal / pico * 0.9 if pico > 0 else senal
+        sd.stop()
+        sd.play(salida.astype(np.float32), samplerate=int(self.fs), blocking=False)
+
+    def detener_reproduccion(self):
+        sd.stop()
 
     # ------------------------------------------------------------------
     # Análisis espectral
@@ -129,6 +171,13 @@ class AudioProcessor:
         with self.lock:
             x = self.buffer_in * self.fft_window
             y = self.buffer_out * self.fft_window
+        return self._espectro(x, y)
+
+    def espectro_senal_completa(self):
+        """FFT de las señales consolidadas."""
+        with self.lock:
+            x = np.asarray(self.signal_in, dtype=np.float64)
+            y = np.asarray(self.signal_out, dtype=np.float64)
         return self._espectro(x, y)
 
     def _espectro(self, x: np.ndarray, y: np.ndarray):
