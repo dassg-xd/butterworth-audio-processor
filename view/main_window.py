@@ -7,7 +7,7 @@ y dibuja resultados con Matplotlib embebido en Tkinter.
 """
 
 import tkinter as tk
-from tkinter import ttk
+from tkinter import ttk, messagebox
 
 import numpy as np
 from matplotlib.figure import Figure
@@ -106,6 +106,8 @@ class MainWindow(tk.Tk):
         self.panel.pack_propagate(False)
 
         self._construir_panel_parametros()
+        self._construir_panel_captura()
+        self._construir_panel_reproduccion()
 
         grafico = ttk.Frame(cuerpo)
         grafico.pack(side="left", fill="both", expand=True)
@@ -144,6 +146,38 @@ class MainWindow(tk.Tk):
         self.lbl_estado.pack(anchor="w", pady=(8, 0))
 
         ttk.Separator(self.panel).pack(fill="x", pady=14)
+
+    # ------------------------------------------------------------------
+    def _construir_panel_captura(self):
+        ttk.Label(self.panel, text="Captura", style="Section.TLabel").pack(anchor="w")
+
+        self.btn_mic = ttk.Button(self.panel, text="Iniciar micrófono",
+                                  style="Accent.TButton", command=self._toggle_microfono)
+        self.btn_mic.pack(fill="x", pady=(10, 0))
+
+        self.lbl_audio = ttk.Label(self.panel, text="Micrófono apagado",
+                                   style="Muted.TLabel", wraplength=260, justify="left")
+        self.lbl_audio.pack(anchor="w", pady=(8, 0))
+
+        ttk.Separator(self.panel).pack(fill="x", pady=14)
+
+    # ------------------------------------------------------------------
+    def _construir_panel_reproduccion(self):
+        ttk.Label(self.panel, text="Reproducción", style="Section.TLabel").pack(anchor="w")
+
+        fila = ttk.Frame(self.panel, style="Panel.TFrame")
+        fila.pack(fill="x", pady=(10, 0))
+        fila.columnconfigure((0, 1), weight=1)
+
+        ttk.Button(fila, text="Original",
+                   command=lambda: self._reproducir("original")).grid(
+            row=0, column=0, sticky="ew", padx=(0, 4))
+        ttk.Button(fila, text="Filtrada",
+                   command=lambda: self._reproducir("filtrada")).grid(
+            row=0, column=1, sticky="ew", padx=(4, 0))
+        ttk.Button(fila, text="Detener", style="Danger.TButton",
+                   command=self._detener_audio).grid(
+            row=1, column=0, columnspan=2, sticky="ew", pady=(8, 0))
 
     # ------------------------------------------------------------------
     def _construir_graficos(self, contenedor):
@@ -256,6 +290,44 @@ class MainWindow(tk.Tk):
         self._dibujar_espectro()
         self.canvas.draw_idle()
 
+    # ------------------------------------------------------------------
+    def _toggle_microfono(self):
+        if self.proc.is_streaming:
+            self.proc.detener_microfono()
+            self._refrescar_boton_mic()
+            self.lbl_audio.configure(text="Micrófono apagado", foreground=MUTED)
+            self._dibujar_espectro()
+            self._dibujar_tiempo()
+            self.canvas.draw_idle()
+            return
+
+        try:
+            self.proc.iniciar_microfono()
+        except Exception as exc:
+            self.lbl_audio.configure(text=str(exc), foreground=ERR)
+            messagebox.showerror("Micrófono", str(exc))
+            return
+
+        self._refrescar_boton_mic()
+        self.lbl_audio.configure(text="Capturando…", foreground=OK)
+
+    def _refrescar_boton_mic(self):
+        texto = "Detener micrófono" if self.proc.is_streaming else "Iniciar micrófono"
+        self.btn_mic.configure(text=texto)
+
+    def _reproducir(self, cual: str):
+        if self.proc.is_streaming:
+            self.proc.consolidar_captura()
+        try:
+            self.proc.reproducir(cual)
+            self.lbl_audio.configure(text=f"Reproduciendo {cual}", foreground=ACCENT)
+        except Exception as exc:
+            self.lbl_audio.configure(text=str(exc), foreground=ERR)
+
+    def _detener_audio(self):
+        self.proc.detener_reproduccion()
+        self.lbl_audio.configure(text="Reproducción detenida", foreground=MUTED)
+
     # ==================================================================
     # Dibujo
     # ==================================================================
@@ -319,8 +391,8 @@ class MainWindow(tk.Tk):
                 self._dibujar_espectro()
                 self._dibujar_tiempo()
                 self.canvas.draw_idle()
-        except Exception:
-            pass
+        except Exception as exc:
+            self.lbl_audio.configure(text=f"Error: {exc}", foreground=ERR)
 
     def destroy(self):
         if self._after_id is not None:
